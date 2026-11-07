@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FireFly</title>
+  </head>
+  <body>
+    <header id="topbar">
+      <div class="brand">FireFly</div>
+      <button id="btn-play" title="Play / pause (space)">▶ Play</button>
+      <div class="seg" id="speed"></div>
+      <button id="btn-palisades" title="Ignite near the Palisades Fire origin with a Jan-2025-style Santa Ana">Palisades</button>
+      <button id="btn-eaton" title="Ignite near the Eaton Fire origin with a Jan-2025-style Santa Ana">Eaton</button>
+      <button id="btn-simbar" title="Simulation controls: speed, reset, ignite, weather">⚙ Simulation ▾</button>
+      <div class="spacer"></div>
+      <div id="clock" class="readout">T+0m</div>
+      <div id="wind" class="readout"><span id="wind-arrow" class="arrow">↑</span> <span id="wind-text">–</span></div>
+    </header>
+    <div id="simbar" hidden>
+      <button id="btn-reset">Reset</button>
+      <button id="btn-ignite" class="toggle on" title="Click the map to start a fire">🔥 Ignite</button>
+      <label class="wx" data-demo-hide>
+        Weather
+        <select id="wx-source">
+          <option value="live">Live (Open-Meteo)</option>
+          <option value="historical">Historical (Jan 7–10 2025)</option>
+          <option value="santaana">Santa Ana (Jan 2025-style)</option>
+          <option value="redflag">Red-flag preset (wind-driven)</option>
+          <option value="hotstill">Hot &amp; still preset (plume)</option>
+        </select>
+      </label>
+      <label class="wx" data-demo-hide title="Gusts, plume, indraft, column collapse, fire whirls"><input type="checkbox" id="fwx-toggle" /> Fire weather</label>
+      <label class="wx" data-demo-hide title="Wind streaks (include the fire's own wind)"><input type="checkbox" id="wind-toggle" checked /> Wind layer</label>
+      <label class="wx" data-demo-hide title="How readily fire spreads house-to-house in built-up areas. Poorly known: few precedents. Uncertainty runs vary it either way.">
+        Urban spread
+        <select id="urban-spread">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+    </div>
+    <main>
+      <div id="map"><div id="loading">Loading LA terrain &amp; imagery…</div></div>
+      <aside id="panel">
+        <section data-demo-hide>
+          <details class="fold" id="fold-conditions">
+            <summary><h2>Conditions</h2> <span id="cond-summary" class="summary-line"></span></summary>
+            <p id="wx-note" class="muted"></p>
+            <dl id="conditions"></dl>
+          </details>
+        </section>
+        <section>
+          <details class="fold" id="fold-fire">
+            <summary><h2>Fire</h2> <span id="fire-summary" class="summary-line"></span></summary>
+            <dl id="firestats"></dl>
+            <details class="fold" id="fold-firetech" data-demo-hide>
+              <summary class="muted">Details</summary>
+              <dl id="firetech"></dl>
+            </details>
+            <p id="data-note" class="muted"></p>
+          </details>
+          <p id="hint" class="muted">Press Palisades or Eaton to start, or open ⚙ Simulation to ignite anywhere.</p>
+        </section>
+        <section data-demo-hide>
+          <details class="fold" id="fold-response">
+            <summary><h2>Response</h2> <span id="response-summary" class="summary-line"></span></summary>
+            <dl id="response"></dl>
+            <p class="muted">Crews anchor at the heel and cut line along both flanks, never in front of the head. Held line stops the fire; intense runs can overrun it and embers can jump it. <b>White</b> = held line · <b style="color:#ff4a5a">red ring</b> = fire escaped the line. Resource numbers are illustrative.</p>
+          </details>
+        </section>
+        <section>
+          <details class="fold" id="fold-zones">
+            <summary><h2>Zones</h2> <span id="zones-summary" class="summary-line"></span></summary>
+            <div id="zones"></div>
+          </details>
+        </section>
+        <section>
+          <h2>Evacuation warnings</h2>
+          <div id="warnings"></div>
+        </section>
+        <section class="placeholder" data-demo-hide>
+          <h2>Incident assistant</h2>
+          <p class="muted">Chat arrives in M3.</p>
+        </section>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

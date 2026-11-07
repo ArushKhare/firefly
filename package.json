@@ -1,0 +1,13 @@
+{
+  "name": "firefly",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix web install && cp -n server/.env.example server/.env || true",
+    "dev": "npm --prefix server start & npm --prefix web run dev",
+    "build": "npm --prefix web ci --include=dev && npm --prefix web run build && npm --prefix server ci --omit=dev",
+    "start": "NODE_ENV=production node --experimental-strip-types --no-warnings server/index.ts"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}
