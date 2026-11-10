@@ -403,8 +403,22 @@ app.post('/api/dispatch', async (req, res) => {
 // ---------- Serve the built web app (single-service deploy) ----------
 const WEB_DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../web/dist');
 if (fs.existsSync(WEB_DIST)) {
-  app.use(express.static(WEB_DIST, { maxAge: '1h', index: 'index.html' }));
-  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(WEB_DIST, 'index.html')));
+  // index.html must never be cached (it names the current build's files); hashed assets can be cached for good
+  const noCache = (res: express.Response) => res.setHeader('Cache-Control', 'no-cache');
+  app.use(
+    express.static(WEB_DIST, {
+      index: 'index.html',
+      setHeaders: (res, file) => {
+        if (file.endsWith('.html')) noCache(res);
+        else if (file.includes(`${path.sep}assets${path.sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        else res.setHeader('Cache-Control', 'public, max-age=3600');
+      },
+    }),
+  );
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    noCache(res);
+    res.sendFile(path.join(WEB_DIST, 'index.html'));
+  });
 }
 
 app.listen(PORT, () => {
