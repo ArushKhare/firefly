@@ -14,6 +14,7 @@ import { crownFactor, envAt, weatherAt } from './sim/ros.ts';
 import { FireOverlay, type MapEvent } from './map/overlay.ts';
 import { WindLayer } from './map/wind.ts';
 import { reliefLayer } from './map/relief.ts';
+import { laNaiveMs, loadRegionWind, type RegionWind } from './map/regionwind.ts';
 import { latLngToCell } from './sim/grid.ts';
 import { fireWindAt, type FireWxSample } from './sim/firewx.ts';
 import { summarise, zoneStats, type EnsembleResult } from './sim/metrics.ts';
@@ -198,15 +199,38 @@ map.on('mouseout', () => (elevBox.style.display = 'none'));
 // Local wind for the streaks: ambient x terrain exposure, plus the fire's own wind
 // (indraft, collapse outflow) and a short-lived swirl around fire whirls.
 let windNow: { U: number; tE: number; tN: number; wx: FireWxSample | null; whirls: { r: number; c: number; age: number }[] } | null = null;
+// Outside the model area: regional Open-Meteo wind (live / historical), or the preset's wind everywhere.
+// Inside: the model's wind, blended into the regional wind over the outer ~3 km of the box.
+let regionWind: RegionWind | null = null;
+let regionSeq = 0;
+function setRegionWind(src: string, t0: number): void {
+  const seq = ++regionSeq;
+  regionWind = null;
+  if (src !== 'live' && src !== 'historical') return;
+  void loadRegionWind(src, t0).then((rw) => {
+    if (seq === regionSeq) regionWind = rw;
+  });
+}
+const EDGE_BLEND = 50; // cells
 const windLayer = new WindLayer(map, (lat, lng) => {
+  if (!windNow) return null;
+  const amb = regionWind ? regionWind.sample(lat, lng, sim.simTime) : [windNow.U * windNow.tE, windNow.U * windNow.tN];
   const rc = latLngToCell(lat, lng);
-  if (!rc || !windNow) return null;
+  if (!rc) return [amb[0], amb[1], 0, false];
+  const edge = Math.min(rc.r, grid.H - 1 - rc.r, rc.c, W - 1 - rc.c);
+  const m = model(rc);
+  if (edge >= EDGE_BLEND) return m;
+  const f = edge / EDGE_BLEND;
+  return [amb[0] + (m[0] - amb[0]) * f, amb[1] + (m[1] - amb[1]) * f, m[2] * f, m[3]];
+});
+function model(rc: { r: number; c: number }): [number, number, number, boolean] {
+  const now = windNow!;
   const exp = grid.windExp ? grid.windExp[rc.r * W + rc.c] : 1;
-  const { U, tE, tN, wx } = windNow;
+  const { U, tE, tN, wx } = now;
   const ae = U * exp * tE;
   const an = U * exp * tN;
   let [we, wn] = wx && sim.fireWx ? fireWindAt(wx, sim.simTime, U, tE, tN, exp, rc.r, rc.c, CELL_M) : [ae, an];
-  for (const w of windNow.whirls) {
+  for (const w of now.whirls) {
     const dx = (rc.c - w.c) * CELL_M;
     const dy = -(rc.r - w.r) * CELL_M;
     const d = Math.hypot(dx, dy);
@@ -218,7 +242,7 @@ const windLayer = new WindLayer(map, (lat, lng) => {
   }
   const burned = !!sim.result && sim.result.arrival[rc.r * W + rc.c] <= sim.simTime;
   return [we, wn, Math.hypot(we - ae, wn - an), burned];
-});
+}
 const windToggle = document.getElementById('wind-toggle') as HTMLInputElement;
 windToggle.onchange = () => windLayer.setEnabled(windToggle.checked);
 const airToggle = document.getElementById('air-toggle') as HTMLInputElement;
@@ -332,6 +356,7 @@ async function loadWeather(src: WxChoice): Promise<void> {
         : presetSchedule(src);
   if (seq !== wxSeq) return;
   schedule = next;
+  setRegionWind(src, src === 'historical' ? Date.parse(SCENARIOS[scenario ?? 'eaton'].start + ':00Z') : laNaiveMs(new Date()) - sim.simTime * 60000);
   // Schedule minutes are relative to "now"; shift so they line up with current sim time.
   const t = sim.simTime;
   const shift = src === 'historical' ? 0 : t; // historical points are already relative to ignition
@@ -952,6 +977,7 @@ async function startScenario(key: ScenarioKey): Promise<void> {
   if (seq !== wxSeq) return;
   schedule = hist;
   sim.setWindSchedule(hist.points);
+  setRegionWind('historical', Date.parse(sc.start + ':00Z'));
   setStartWall(hist.startLocal, true);
   document.getElementById('wx-note')!.textContent = hist.note;
   void showPerimeter(key);
