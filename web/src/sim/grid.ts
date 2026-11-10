@@ -20,12 +20,32 @@ export interface LatLng {
 }
 
 const M_PER_DEG_LAT = 111320;
+// The grid window moves to wherever a fire starts (setGridCenter). ES module live bindings: importers
+// always see the current values.
 export const DLAT = CELL_M / M_PER_DEG_LAT;
-export const DLNG = CELL_M / (M_PER_DEG_LAT * Math.cos((CENTER.lat * Math.PI) / 180));
-export const NORTH = CENTER.lat + (H * DLAT) / 2;
-export const SOUTH = CENTER.lat - (H * DLAT) / 2;
-export const WEST = CENTER.lng - (W * DLNG) / 2;
-export const EAST = CENTER.lng + (W * DLNG) / 2;
+export let DLNG = 0;
+export let NORTH = 0;
+export let SOUTH = 0;
+export let WEST = 0;
+export let EAST = 0;
+export let GRID_CENTER = { lat: CENTER.lat, lng: CENTER.lng };
+
+export function setGridCenter(lat: number, lng: number): void {
+  GRID_CENTER = { lat, lng };
+  DLNG = CELL_M / (M_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
+  NORTH = lat + (H * DLAT) / 2;
+  SOUTH = lat - (H * DLAT) / 2;
+  WEST = lng - (W * DLNG) / 2;
+  EAST = lng + (W * DLNG) / 2;
+}
+setGridCenter(CENTER.lat, CENTER.lng);
+
+/** True if the point is inside the current grid window, at least marginM from its edge. */
+export function inGrid(lat: number, lng: number, marginM = 0): boolean {
+  const mLat = marginM / M_PER_DEG_LAT;
+  const mLng = marginM * (DLNG / CELL_M);
+  return lat < NORTH - mLat && lat > SOUTH + mLat && lng > WEST + mLng && lng < EAST - mLng;
+}
 
 export function cellToLatLng(r: number, c: number): LatLng {
   return { lat: NORTH - (r + 0.5) * DLAT, lng: WEST + (c + 0.5) * DLNG };

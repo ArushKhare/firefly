@@ -58,7 +58,7 @@ function limit(perMinute: number): express.RequestHandler {
   };
 }
 app.use('/api/chat', limit(20));
-app.use('/api/alerts', limit(20));
+app.use('/api/alerts', limit(40)); // big fires send alerts in batches of 8 zones
 app.use('/api/tts', limit(120));
 app.use('/api/dispatch', limit(20));
 // Production: no general chat endpoint, no free-text speech. Dev keeps them for experiments.

@@ -19,7 +19,6 @@ export const RESPONSE = {
   // control line production, km per hour per unit (heavy brush, typical order of magnitude)
   CREW_KMH: 0.1,
   DOZER_KMH: 0.4,
-  AIR_KMH: 0.2, // retardant line
   ENGINE_KMH: 0.005, // hose lays; engines mostly protect structures
   // Life safety first: while homes burn or wind is strong, most resources protect structures/evacuations
   LINE_SHARE_CRISIS: 0.12, // dangerous wind: crews pulled off the line
@@ -49,6 +48,44 @@ export const RESPONSE = {
   STEP_MIN: 10,
 };
 
+// Air attack: aircraft drop retardant (fixed-wing air tankers) or water (helicopters) ahead of the fire.
+// Coated fuel spreads fire much slower at low-moderate intensity; an intense head fire burns through.
+// Illustrative values (order of magnitude from USFS air tanker / retardant effectiveness studies).
+export const AIR = {
+  FIRST_MIN: 20, // first aircraft over the fire this long after ignition
+  TURNAROUND_MIN: 40, // load, fly, drop, return
+  TANKER_SHARE: 0.5, // share of aircraft that are retardant air tankers (rest: water-dropping helicopters)
+  NIGHT_SHARE: 0.2, // night: only night-capable helicopters fly (water only)
+  DAY_START_H: 7, // tankers fly roughly sunrise+30 min to sunset-30 min (LA, winter: ~7:00-16:45)
+  DAY_END_H: 16.75,
+  LINE_M: 400, // one large-tanker drop: ~400 m line at fireline coverage
+  WATER_LINE_M: 150, // helicopter bucket drop
+  OFFSET_M: 150, // drops go just ahead of the edge (indirect attack)
+  LOOKAHEAD_M: 700, // homes within this distance ahead of an edge make it a priority target
+  K_LOW: 0.06, // spread multiplier through coated fuel at low intensity (retardant checks a flank)
+  K_HIGH: 0.8, // ... at very high intensity (fire burns through retardant)
+  I_LOW: 2000, // kW/m
+  I_HIGH: 12000,
+  RETARDANT_LIFE_MIN: 1440, // long-term retardant keeps working until rain or burn-through
+  WATER_LIFE_MIN: 60, // water evaporates
+  EMBER_K: 0.35, // embers landing on coated fuel ignite less often
+};
+export const DROP_RETARDANT = 1;
+export const DROP_WATER = 2;
+export const dropLife = (kind: number) => (kind === DROP_RETARDANT ? AIR.RETARDANT_LIFE_MIN : kind === DROP_WATER ? AIR.WATER_LIFE_MIN : 0);
+
+/** Aircraft that can fly at sim minute t (gusts ground everything; at night only helicopters). */
+export function aircraftFlying(t: number, tIgnite: number, gustMps: number, clockStartMin: number): { flying: number; grounded: boolean; night: boolean } {
+  const night = !isDaylight(t, clockStartMin);
+  if (gustMps > RESPONSE.GROUND_AIR_GUST_MS) return { flying: 0, grounded: true, night };
+  const r = onScene((t - tIgnite) / 60);
+  return { flying: Math.round(r.aircraft * (night ? AIR.NIGHT_SHARE : 1)), grounded: false, night };
+}
+export function isDaylight(t: number, clockStartMin: number): boolean {
+  const h = ((((clockStartMin + t) % 1440) + 1440) % 1440) / 60;
+  return h >= AIR.DAY_START_H && h < AIR.DAY_END_H;
+}
+
 export interface ResponseState {
   engines: number;
   crews: number;
@@ -63,9 +100,14 @@ export interface ResponseState {
   contained: Uint8Array; // cells drawn as control line
   breaches: number; // times the fire beat the line so far
   lastBreach: { cell: number; t: number; kind: string } | null;
+  airNight: boolean; // night: tankers can't fly, helicopters only
+  aircraftFlying: number;
+  drops: number; // air drops so far
+  retardantDrops: number;
+  lastDropT: number | null;
 }
 
-function onScene(hours: number) {
+export function onScene(hours: number) {
   const R = RESPONSE.RAMP;
   if (hours <= R[0].h) return { ...R[0] };
   for (let k = 0; k + 1 < R.length; k++) {
@@ -92,12 +134,12 @@ export function divisions(hours: number): number {
 }
 
 /** Secured control-line production (km/h) for the resources on scene at `hours` after ignition. */
-export function lineRateKmh(hours: number, speedMps: number, gustMps: number, homesBurning: boolean): number {
+export function lineRateKmh(hours: number, speedMps: number, homesBurning: boolean): number {
   const r = onScene(hours);
   const share =
     speedMps > RESPONSE.CRISIS_WIND_MS ? RESPONSE.LINE_SHARE_CRISIS : homesBurning ? RESPONSE.LINE_SHARE_HOMES : RESPONSE.LINE_SHARE_NORMAL;
-  const grounded = gustMps > RESPONSE.GROUND_AIR_GUST_MS;
-  const raw = r.crews * RESPONSE.CREW_KMH + r.dozers * RESPONSE.DOZER_KMH + r.engines * RESPONSE.ENGINE_KMH + (grounded ? 0 : r.aircraft * RESPONSE.AIR_KMH);
+  // aircraft are not counted here: they act through explicit retardant/water drops (solver: air attack)
+  const raw = r.crews * RESPONSE.CREW_KMH + r.dozers * RESPONSE.DOZER_KMH + r.engines * RESPONSE.ENGINE_KMH;
   const x = Math.min(1, Math.max(0, (speedMps - RESPONSE.WIND_EFF_U0) / (RESPONSE.WIND_EFF_U1 - RESPONSE.WIND_EFF_U0)));
   return raw * share * RESPONSE.SECURE_FACTOR * (1 - (1 - RESPONSE.WIND_EFF_MIN) * x);
 }
@@ -133,12 +175,13 @@ export function clusterBreaches<T extends { cell: number; t: number; kind: strin
 
 /** Panel/map readout from the solver's control lines at time t. */
 export function computeResponse(
-  res: { arrival: Float32Array; lineT: Float32Array; breaches: { cell: number; t: number; kind: string }[] },
+  res: { arrival: Float32Array; lineT: Float32Array; breaches: { cell: number; t: number; kind: string }[]; drops: { t: number; kind: number }[] },
   fuel: Uint8Array,
   blocked: Uint8Array,
   t: number,
   tIgnite: number,
   weather: WeatherPoint[],
+  clockStartMin: number,
 ): ResponseState {
   const { arrival, lineT } = res;
   let perim = 0;
@@ -182,7 +225,14 @@ export function computeResponse(
   const w = weatherAt(weather, t);
   const rs = onScene((t - tIgnite) / 60);
   const breaches = clusterBreaches(res.breaches.filter((b) => b.t <= t));
+  const air = aircraftFlying(t, tIgnite, w.gustMps, clockStartMin);
+  const drops = res.drops.filter((d) => d.t <= t);
   return {
+    airNight: air.night,
+    aircraftFlying: air.flying,
+    drops: drops.length,
+    retardantDrops: drops.filter((d) => d.kind === DROP_RETARDANT).length,
+    lastDropT: drops.length ? drops[drops.length - 1].t : null,
     engines: rs.engines,
     crews: rs.crews,
     dozers: rs.dozers,

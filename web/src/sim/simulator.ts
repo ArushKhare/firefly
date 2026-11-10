@@ -34,6 +34,11 @@ export class SolverClient {
       this.worker.postMessage({ type, id, ...payload });
     });
   }
+  terminate(): void {
+    this.worker.terminate();
+    for (const p of this.pending.values()) p.reject(new Error('solver replaced'));
+    this.pending.clear();
+  }
   solve(input: SolveInput): Promise<SolveResult> {
     return this.call<SolveResult>('solve', { input });
   }
@@ -48,6 +53,8 @@ export class Simulator {
   dryness = 1;
   fireWx = FIREWX.ENABLED;
   urbanMult = 1;
+  airAttack = true; // aircraft drop retardant / water
+  clockStartMin = 12 * 60; // local time of day at sim minute 0 (aircraft fly by day)
   firebreak: Uint8Array;
   firebreakPaths: { path: LatLng[]; widthM: number }[] = [];
   result: SolveResult | null = null;
@@ -155,6 +162,8 @@ export class Simulator {
       fireWx: this.fireWx,
       firstIgnitionT: this.ignitions.length ? Math.min(...this.ignitions.map((x) => x.t)) : undefined,
       urbanMult: this.urbanMult,
+      airAttack: this.airAttack,
+      clockStartMin: this.clockStartMin,
       seed: this.seed,
       horizon: this.simTime + horizonMin,
       blocked: this.blockedMask(),
@@ -170,6 +179,8 @@ export class Simulator {
     s.dryness = this.dryness;
     s.fireWx = this.fireWx;
     s.urbanMult = this.urbanMult;
+    s.airAttack = this.airAttack;
+    s.clockStartMin = this.clockStartMin;
     s.firebreak = new Uint8Array(this.firebreak);
     s.firebreakPaths = this.firebreakPaths.map((f) => ({ path: [...f.path], widthM: f.widthM }));
     s.result = this.result;

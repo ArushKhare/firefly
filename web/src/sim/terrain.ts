@@ -1,6 +1,6 @@
 // Synthetic terrain, fuel map and heterogeneity. Pure and seeded. No DOM.
-import { W, H, CELL_M, NONE, GRASS, SHRUB, FOREST, URBAN, ZONES } from '../config.ts';
-import { type StaticGrid, latLngToRC, stampLine } from './grid.ts';
+import { W, H, CELL_M, NONE, GRASS, SHRUB, FOREST } from '../config.ts';
+import { type StaticGrid, stampLine } from './grid.ts';
 
 // ---------- Seeded hashing / noise ----------
 export function hash32(a: number): number {
@@ -121,22 +121,6 @@ export function generateTerrain(seed: number): StaticGrid {
         if (r < 0 || r >= H || c < 0 || c >= W) continue;
         const wob = 1 + 0.35 * (fbm(c / 6, r / 6, seed + 30 + k, 2) - 0.5);
         if ((r - cr) ** 2 + (c - cc) ** 2 <= (rad * wob) ** 2) fuel[r * W + c] = GRASS;
-      }
-    }
-  }
-
-  // ---- Urban patches at zone centers (a treed town: urban mixed with forest) ----
-  for (const z of ZONES) {
-    const p = latLngToRC(z.lat, z.lng);
-    const rad = (z.radiusM / CELL_M) * 0.95;
-    for (let r = Math.floor(p.r - rad); r <= p.r + rad; r++) {
-      for (let c = Math.floor(p.c - rad); c <= p.c + rad; c++) {
-        if (r < 0 || r >= H || c < 0 || c >= W) continue;
-        const d = Math.hypot(r - p.r, c - p.c) / rad;
-        const edge = 1 + 0.25 * (fbm(c / 8, r / 8, seed + 40, 2) - 0.5);
-        if (d > edge) continue;
-        const mix = fbm(c / 4, r / 4, seed + 41, 2);
-        fuel[r * W + c] = mix < 0.62 ? URBAN : FOREST;
       }
     }
   }

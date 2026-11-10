@@ -4,7 +4,7 @@ import { FIREWX, FUELS, NONE, PHYS, URBAN } from '../config.ts';
 import type { StaticGrid } from './grid.ts';
 import { buildEnvTable, directionalRate, eccentricity, gustSeries, headRates, type WeatherPoint } from './ros.ts';
 import { FireTracker, fireWindAt, updateFireWx, type FireWxSample } from './firewx.ts';
-import { RESPONSE, breachProbability, divisions, lineRateKmh } from '../response.ts';
+import { AIR, DROP_RETARDANT, DROP_WATER, RESPONSE, aircraftFlying, breachProbability, divisions, dropLife, isDaylight, lineRateKmh } from '../response.ts';
 import { rand3 } from './terrain.ts';
 
 export interface Ignition {
@@ -30,12 +30,27 @@ export interface SolveInput {
     lineT?: Float32Array;
     protectT?: Float32Array;
     breaches?: BreachEvent[];
+    retT?: Float32Array;
+    retKind?: Uint8Array;
+    drops?: DropEvent[];
   };
   firstIgnitionT?: number; // first ignition of the incident (resources ramp from here)
   containment?: boolean; // firefighters build control line that can stop the fire (default true)
   fireWx?: boolean; // fire-generated weather + gust noise (default FIREWX.ENABLED)
   suppression?: boolean; // firefighting on low-intensity edges (default PHYS.SUPPRESS_ON)
   urbanMult?: number; // structure-fire spread multiplier (uncertain; default 1)
+  airAttack?: boolean; // aircraft drop retardant / water ahead of the fire (default true)
+  clockStartMin?: number; // local time of day at sim minute 0, minutes after midnight (aircraft fly by day)
+}
+
+/** One air drop: a line of retardant (air tanker) or water (helicopter) from (r0,c0) to (r1,c1). */
+export interface DropEvent {
+  t: number;
+  kind: number; // DROP_RETARDANT | DROP_WATER
+  r0: number;
+  c0: number;
+  r1: number;
+  c1: number;
 }
 
 export interface BreachEvent {
@@ -66,6 +81,9 @@ export interface SolveResult {
   lineT: Float32Array; // burned edge cell held by control line from this time (Infinity = never)
   protectT: Float32Array; // unburned cell behind a control line from this time
   breaches: BreachEvent[]; // fire beat the line: overran it or spotted across
+  retT: Float32Array; // time an air drop coated this cell (Infinity = never)
+  retKind: Uint8Array; // DROP_RETARDANT | DROP_WATER (0 = none)
+  drops: DropEvent[];
   fireWx: FireWxSample[]; // fire-weather timeline, one sample per FIREWX.STATE_DT minutes
   horizon: number;
   ms: number;
@@ -349,7 +367,7 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
   };
   const buildLine = (t: number, U10: number, gust: number) => {
     if (!containOn || !isFinite(tFirst)) return;
-    budgetCells += ((lineRateKmh((t - tFirst) / 60, U10, gust, homesBurningAt(t)) * STATE_DT) / 60) * (1000 / cellM);
+    budgetCells += ((lineRateKmh((t - tFirst) / 60, U10, homesBurningAt(t)) * STATE_DT) / 60) * (1000 / cellM);
     let guard = 0;
     const maxHeads = 2 * divisions((t - tFirst) / 60);
     while (budgetCells >= 1 && guard++ < 5000) {
@@ -410,6 +428,127 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
     budgetCells = Math.min(budgetCells, 200); // don't bank unlimited line while waiting
   };
 
+  // ---- Air attack: retardant / water drops just ahead of the fire edge ----
+  const airOn = inp.airAttack ?? true;
+  const clock0 = inp.clockStartMin ?? 12 * 60;
+  const retT = new Float32Array(n).fill(Infinity);
+  const retKind = new Uint8Array(n);
+  const drops: DropEvent[] = [];
+  if (inp.prev && freezeT > -Infinity) {
+    const P = inp.prev;
+    if (P.retT && P.retKind) for (let i = 0; i < n; i++) if (P.retT[i] <= freezeT) ((retT[i] = P.retT[i]), (retKind[i] = P.retKind[i]));
+    for (const d of P.drops ?? []) if (d.t <= freezeT) drops.push(d);
+  }
+  const coated = (j: number, t: number) => retT[j] <= t && t - retT[j] < dropLife(retKind[j]);
+  let dropBudget = 0;
+  const offCells = AIR.OFFSET_M / cellM;
+  const lookCells = Math.round(AIR.LOOKAHEAD_M / cellM);
+  /** Pick the most useful edge and lay one drop line just ahead of it. False if no target. */
+  const placeDrop = (t: number, kind: number): boolean => {
+    // candidate edge cells: burned in the last 45 min, still next to unburned fuel
+    const cand: number[] = [];
+    for (let q = popOrder.length - 1; q >= 0 && cand.length < 600; q--) {
+      const i = popOrder[q];
+      if (arrival[i] < t - 45) break;
+      if (isEdge(i, t)) cand.push(i);
+    }
+    if (!cand.length) return false;
+    // fire centre: heat centre from fire weather, else the centroid of the candidates
+    let cr = 0;
+    let cc = 0;
+    if (wx) ((cr = wx.heatR), (cc = wx.heatC));
+    else {
+      for (const i of cand) ((cr += (i / W) | 0), (cc += i % W));
+      ((cr /= cand.length), (cc /= cand.length));
+    }
+    let best = -1;
+    let bestS = -Infinity;
+    let bu = 0;
+    let bv = 0;
+    const tries = Math.min(40, cand.length);
+    for (let k = 0; k < tries; k++) {
+      const i = cand[Math.floor(rand3(inp.seed, drops.length * 64 + k, 300) * cand.length)];
+      const ri = (i / W) | 0;
+      const ci = i - ri * W;
+      let u = ri - cr; // outward direction (rows, cols)
+      let v = ci - cc;
+      const len = Math.hypot(u, v);
+      if (len < 1) continue;
+      u /= len;
+      v /= len;
+      const I = loadHI[fuel[i]] * (ros[i] / 60);
+      // retardant works on flanks and moderate fronts, not against the intense head
+      let sc = I < AIR.I_LOW ? 1 : I < AIR.I_HIGH ? 0.7 : 0.15;
+      // protect homes: unburned structures ahead of this edge
+      for (let d = 3; d <= lookCells; d += 2) {
+        const rr = Math.round(ri + u * d);
+        const c2 = Math.round(ci + v * d);
+        if (rr < 0 || rr >= H || c2 < 0 || c2 >= W) break;
+        const j = rr * W + c2;
+        if (FUELS[fuel[j]].structure && !(arrival[j] <= t)) {
+          sc += 1.5 * (1 - d / (lookCells + 1));
+          break;
+        }
+      }
+      const pr = Math.round(ri + u * offCells);
+      const pc = Math.round(ci + v * offCells);
+      if (pr >= 0 && pr < H && pc >= 0 && pc < W && coated(pr * W + pc, t)) sc -= 1.2; // already covered
+      sc += 0.3 * rand3(inp.seed, drops.length * 64 + k, 301);
+      if (sc > bestS) ((bestS = sc), (best = i), (bu = u), (bv = v));
+    }
+    if (best < 0) return false;
+    const ri = (best / W) | 0;
+    const ci = best - ri * W;
+    const half = (kind === DROP_RETARDANT ? AIR.LINE_M : AIR.WATER_LINE_M) / cellM / 2;
+    const mr = ri + bu * offCells;
+    const mc = ci + bv * offCells;
+    // line runs across the outward direction (perpendicular), laid 4-connected so fire can't slip between cells
+    const r0 = mr - bv * half;
+    const c0 = mc + bu * half;
+    const r1 = mr + bv * half;
+    const c1 = mc - bu * half;
+    const steps = Math.ceil(2 * half * 2) + 1;
+    let pr = -1;
+    let pc = -1;
+    const coat = (rr: number, c2: number) => {
+      if (rr < 0 || rr >= H || c2 < 0 || c2 >= W) return;
+      const j = rr * W + c2;
+      if (arrival[j] <= t || blocked[j] || fuel[j] === NONE) return;
+      if (coated(j, t) && retKind[j] === DROP_RETARDANT && kind === DROP_WATER) return; // water doesn't replace retardant
+      retT[j] = t;
+      retKind[j] = kind;
+    };
+    for (let s2 = 0; s2 <= steps; s2++) {
+      const f = s2 / steps;
+      const rr = Math.round(r0 + (r1 - r0) * f);
+      const c2 = Math.round(c0 + (c1 - c0) * f);
+      if (pr >= 0 && rr !== pr && c2 !== pc) coat(pr, c2); // fill the diagonal step
+      coat(rr, c2);
+      if (kind === DROP_RETARDANT) coat(Math.round(rr + bu), Math.round(c2 + bv)); // tanker line ~2 cells (~100 m) deep
+      pr = rr;
+      pc = c2;
+    }
+    drops.push({ t, kind, r0, c0, r1, c1 });
+    return true;
+  };
+  const airDrops = (t: number, gust: number) => {
+    if (!airOn || !isFinite(tFirst) || t - tFirst < AIR.FIRST_MIN) return;
+    const { flying } = aircraftFlying(t, tFirst, gust, clock0);
+    if (flying <= 0) return;
+    dropBudget += (flying * STATE_DT) / AIR.TURNAROUND_MIN;
+    const day = isDaylight(t, clock0);
+    let guard = 0;
+    while (dropBudget >= 1 && guard++ < 30) {
+      dropBudget -= 1;
+      const kind = day && rand3(inp.seed, drops.length, 310) < AIR.TANKER_SHARE ? DROP_RETARDANT : DROP_WATER;
+      if (!placeDrop(t, kind)) {
+        dropBudget = 0;
+        break;
+      }
+    }
+    dropBudget = Math.min(dropBudget, 3);
+  };
+
   // ---- New ignitions ----
   for (const ig of inp.ignitions) {
     const i = ig.cell;
@@ -467,7 +606,7 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
     const j = lr * W + lc;
     if (j === i || done[j] || blocked[j] || fuel[j] === NONE) return;
     const recept = Math.min(1, FUELS[fuel[j]].recept * Math.min(1, dryF) * (FUELS[fuel[j]].structure ? structK(j) : structMult ? structMult[j] : 1));
-    if (rand3(inp.seed, i, salt + 3) >= recept) return;
+    if (rand3(inp.seed, i, salt + 3) >= recept * (airOn && coated(j, t) ? AIR.EMBER_K : 1)) return;
     const delay = dMin + (dMax - dMin) * rand3(inp.seed, i, salt + 4);
     const tl = Math.fround(Math.max(t + delay, freezeT));
     if (tl < arrival[j] && tl <= horizon) {
@@ -530,7 +669,10 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
       const last = wxTimeline.length ? wxTimeline[wxTimeline.length - 1] : null;
       wx = updateFireWx(tracker, last, nextTick, e.U10, e.fromDeg, cellM, inp.seed, Math.round(nextTick / STATE_DT), wxOn);
       wxTimeline.push(wx);
-      if (nextTick > freezeT) buildLine(nextTick, e.U10, weatherGust(nextTick));
+      if (nextTick > freezeT) {
+        buildLine(nextTick, e.U10, weatherGust(nextTick));
+        airDrops(nextTick, weatherGust(nextTick));
+      }
       nextTick += STATE_DT;
     }
     // Cells re-opened from frozen history must use the fire weather of their own time
@@ -614,10 +756,16 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
         if (!FUELS[fj].structure && Ij < iMax) r *= env.U10 < PHYS.SUPPRESS_AIR_WIND_MS && Ij < PHYS.EXTINGUISH_I_MAX ? PHYS.EXTINGUISH_K : PHYS.SUPPRESS_K;
         else if (FUELS[fj].structure && structMult && structMult[j] < PHYS.STRUCT_DEFEND_BELOW) r *= PHYS.STRUCT_DEFEND_K;
       }
+      const mode = sMode[k];
+      // Air drops: coated fuel (or a coated cell the move passes) slows the fire, less so when it is intense
+      if (airOn && (coated(j, t) || (mode !== 0 && (coated(i + sMidA[k], t) || coated(i + sMidB[k], t))))) {
+        const Ij = loadHI[fj] * (r / 60);
+        const x = Math.min(1, Math.max(0, (Ij - AIR.I_LOW) / (AIR.I_HIGH - AIR.I_LOW)));
+        r *= AIR.K_LOW + (AIR.K_HIGH - AIR.K_LOW) * x;
+      }
       // Barriers: blocked always stops; road stops only slow fire. Check cells the move passes.
       const slow = r < breach;
       if (slow && road[j]) continue;
-      const mode = sMode[k];
       if (mode !== 0) {
         const a = i + sMidA[k];
         const b = i + sMidB[k];
@@ -681,5 +829,5 @@ export function solve(g: StaticGrid, inp: SolveInput): SolveResult {
   // Keep only embers whose landing actually started the fire there
   const realSpots = spots.filter((s) => spotted[s.to] === 1 && arrival[s.to] === s.tLand);
 
-  return { arrival, ros, t0, spotted, spots: realSpots, whirls, lineT, protectT, breaches, fireWx: wxTimeline, horizon, ms: performance.now() - start };
+  return { arrival, ros, t0, spotted, spots: realSpots, whirls, lineT, protectT, breaches, retT, retKind, drops, fireWx: wxTimeline, horizon, ms: performance.now() - start };
 }

@@ -66,7 +66,7 @@ async function loadMosaic(url: (z: number, x: number, y: number) => string, z: n
 export async function loadRealFeatures(progress: (msg: string) => void): Promise<CellFeatures> {
   let done = 0;
   let total = 0;
-  const tick = () => progress(`Loading LA terrain & imagery… ${++done}/${total || '?'} tiles`);
+  const tick = () => progress(`Loading terrain & imagery… ${++done}/${total || '?'} tiles`);
   // estimate total for the progress text
   const count = (z: number) => {
     const [xa, ya] = mercPx(cellToLatLng(-1, -1).lat, cellToLatLng(-1, -1).lng, z);

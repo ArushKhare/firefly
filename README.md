@@ -6,12 +6,15 @@ Built at NOVA (CMU GenAI hackathon). Replays the January 2025 **Palisades** and 
 > ⚠️ Simulation only. Every outgoing message is prefixed `[SIMULATION]`. Not an official forecast or alerting system.
 
 ## What it does
-1. **Predicts fire spread.** An arrival-time solver runs in a Web Worker over a 60 m grid of LA. It models wind (empirical 10%/20% rules), fuel moisture from temperature and humidity, slope, crown fire, embers, house-to-house spread, and fire-generated weather (gusts, plume, indraft, column collapse, fire whirls).
+1. **Predicts fire spread anywhere in Southern California.** The map covers the whole megaregion (Santa Maria and Barstow to the Mexican border, Point Conception to the Imperial Valley). An arrival-time solver runs in a Web Worker over a 60 m grid (60 × 29 km) that moves to wherever you start a fire. It models wind (empirical 10%/20% rules), fuel moisture from temperature and humidity, slope, crown fire, embers, house-to-house spread, and fire-generated weather (gusts, plume, indraft, column collapse, fire whirls).
 2. **Quantifies uncertainty.** Each update runs 8 extra versions with varied wind, dryness and urban flammability, giving a likely range of arrival times for each zone.
 3. **Triggers warnings predictively.** It issues an EVACUATION ORDER when the earliest plausible arrival is less than the zone's evacuation clearance time plus a buffer, and an EVACUATION WARNING further out. Tiers never downgrade on their own.
 4. **Writes and announces alerts automatically.** A fast LLM writes SMS and long-form text in English and Spanish. **Deepgram Aura-2** reads a fixed spoken script, streamed so the first sound comes in under 1 s. Alerts go out in-app, as audio, and optionally as a phone push via ntfy.
-5. **Simulates the firefight.** Crews build continuous control line from the heel of the fire along both flanks, aircraft are grounded in strong gusts, the fire can overrun or spot across a line, and containment is reported up to 100%.
+5. **Simulates the firefight.** Crews build continuous control line from the heel of the fire along both flanks. Air tankers drop retardant and helicopters drop water just ahead of the edge, aiming first at edges heading toward homes. Coated fuel slows a weak flank by about 16× but barely slows an intense head fire. Retardant lasts a day and water about an hour. Aircraft are grounded in gusts over 40 mph, and at night only helicopters fly (toggle: ⚙ Simulation → ✈ Retardant drops), the fire can overrun or spot across a line, and containment is reported up to 100%.
 6. **Validates against reality.** The official final perimeters are drawn on the map, and the model reports its overlap with them.
+
+## Evacuation zones
+Every piece of land in the region is in exactly one zone: 5,842 hexes about 5 km across, each named after its nearest OpenStreetMap place (e.g. `ALTA-2` Altadena, `RAM-9` Ramona; `X…` = remote land "Near" a place). Clearance times (45/60/90 min) are estimated from terrain relief. Regenerate with `python3 -I tools/build_zones.py <cache_dir>`, which writes `web/src/zonesData.ts`.
 
 ## Secure AI design
 - **The AI never decides who evacuates.** Tiers come from deterministic code. The LLM only phrases them.
@@ -25,6 +28,7 @@ Built at NOVA (CMU GenAI hackathon). Replays the January 2025 **Palisades** and 
 - **Imagery:** Esri World Imagery. Fuels are classified from colour and texture, then checked block by block by a vision model (`tools/vision_fuel.py` writes `web/public/landcover/vision_la.json`).
 - **Weather:** Open-Meteo historical forecast, hourly, Jan 7–10 2025 (`web/public/weather/`).
 - **Perimeters:** NIFC WFIGS interagency perimeters (`web/public/perimeters/`).
+- **Zone names:** © OpenStreetMap contributors (ODbL), via Overpass.
 
 ## Run locally
 ```bash

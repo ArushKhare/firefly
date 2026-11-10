@@ -30,6 +30,7 @@
           <option value="hotstill">Hot &amp; still preset (plume)</option>
         </select>
       </label>
+      <label class="wx" title="Air tankers drop retardant and helicopters drop water just ahead of the fire edge. Grounded in gusts over 40 mph; at night only helicopters fly."><input type="checkbox" id="air-toggle" checked /> ✈ Retardant drops</label>
       <label class="wx" data-demo-hide title="Gusts, plume, indraft, column collapse, fire whirls"><input type="checkbox" id="fwx-toggle" /> Fire weather</label>
       <label class="wx" data-demo-hide title="Wind streaks (include the fire's own wind)"><input type="checkbox" id="wind-toggle" checked /> Wind layer</label>
       <label class="wx" data-demo-hide title="How readily fire spreads house-to-house in built-up areas. Poorly known: few precedents. Uncertainty runs vary it either way.">
@@ -42,7 +43,7 @@
       </label>
     </div>
     <main>
-      <div id="map"><div id="loading">Loading LA terrain &amp; imagery…</div></div>
+      <div id="map"><div id="loading">Loading terrain &amp; imagery…</div></div>
       <aside id="panel">
         <section data-demo-hide>
           <details class="fold" id="fold-conditions">
@@ -61,7 +62,7 @@
             </details>
             <p id="data-note" class="muted"></p>
           </details>
-          <p id="hint" class="muted">Press Palisades or Eaton to start, or open ⚙ Simulation to ignite anywhere.</p>
+          <p id="hint" class="muted">Press Palisades or Eaton to start, or open ⚙ Simulation and click anywhere in Southern California to start a fire.</p>
         </section>
         <section data-demo-hide>
           <details class="fold" id="fold-response">

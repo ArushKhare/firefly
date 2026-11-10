@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { CITY, FUELS, NONE, RENDER, ROAD_COLOR } from '../config.ts';
 import { EAST, NORTH, SOUTH, WEST, type StaticGrid } from '../sim/grid.ts';
 import type { SolveResult } from '../sim/solver.ts';
+import { DROP_RETARDANT, dropLife } from '../response.ts';
 import { attachZoomAnim } from './zoomanim.ts';
 
 type RGB = [number, number, number];
@@ -20,12 +21,16 @@ const EMBER_DARK = hex('#4a1410');
 const EMBER_BRIGHT = hex('#ffb347');
 const SCAR = hex('#1b1715');
 const ASH = hex('#4a4643');
+const RETARDANT = hex('#e0306a'); // Phos-Chek red-pink
+const WATER = hex('#6ec3ff');
 
 export interface MapEvent {
   r: number; // fractional row/col
   c: number;
   age: number; // minutes since event
-  kind: 'spot' | 'whirl' | 'collapse' | 'breach';
+  kind: 'spot' | 'whirl' | 'collapse' | 'breach' | 'retardant' | 'water';
+  r1?: number; // line end (air drops)
+  c1?: number;
 }
 
 export interface FrameStats {
@@ -46,6 +51,9 @@ export class FireOverlay {
   private flameLUT = new Uint32Array(256);
   private textureLUT: Float32Array; // per-cell texture factor from hetero
   private residence: Float32Array;
+  /** Cells drawn as control line (containment). */
+  contained: Uint8Array | null = null;
+  events: MapEvent[] = [];
 
   constructor(
     private map: L.Map,
@@ -68,10 +76,8 @@ export class FireOverlay {
       this.flameLUT[k] = pack(c[0], c[1], c[2], 255);
     }
     this.textureLUT = new Float32Array(W * H);
-    for (let i = 0; i < W * H; i++) this.textureLUT[i] = 0.82 + 0.36 * ((grid.hetero[i] - 0.6) / 0.8);
     this.residence = new Float32Array(FUELS.map((f) => Math.max(1, f.residence)));
-
-    this.drawTerrain();
+    this.setGrid(grid);
 
     // Map-sized canvas in its own pane, redrawn on move and every frame.
     const pane = map.createPane('fire');
@@ -83,6 +89,15 @@ export class FireOverlay {
     map.on('move resize viewreset', () => this.draw());
     this.resize();
     map.on('resize', () => this.resize());
+  }
+
+  /** Swap in a new grid (the model window moved). Same W x H. */
+  setGrid(grid: StaticGrid): void {
+    this.grid = grid;
+    for (let i = 0; i < grid.W * grid.H; i++) this.textureLUT[i] = 0.82 + 0.36 * ((grid.hetero[i] - 0.6) / 0.8);
+    this.contained = null;
+    this.events = [];
+    this.drawTerrain();
   }
 
   private resize(): void {
@@ -139,8 +154,6 @@ export class FireOverlay {
   }
 
   /** Recolor fire canvas for sim time t. Returns live stats from the same pass. */
-  /** Cells drawn as control line (containment). */
-  contained: Uint8Array | null = null;
 
   renderFire(res: SolveResult | null, t: number): FrameStats {
     const px = this.firePx;
@@ -150,7 +163,7 @@ export class FireOverlay {
       this.fireCtx.putImageData(this.fireImg, 0, 0);
       return stats;
     }
-    const { arrival, ros, spotted } = res;
+    const { arrival, ros, spotted, retT, retKind } = res;
     const fuel = this.grid.fuel;
     const tex = this.textureLUT;
     const resid = this.residence;
@@ -161,6 +174,18 @@ export class FireOverlay {
     for (let i = 0; i < n; i++) {
       const a = arrival[i];
       if (!(a <= t)) {
+        // unburned fuel coated by an air drop: retardant stays red-pink, water fades as it dries
+        const rt = retT[i];
+        if (rt <= t) {
+          const k = retKind[i];
+          const life = dropLife(k);
+          const age = t - rt;
+          if (age < life) {
+            if (k === DROP_RETARDANT) px[i] = pack(RETARDANT[0], RETARDANT[1], RETARDANT[2], Math.round(200 - 80 * (age / life)));
+            else px[i] = pack(WATER[0], WATER[1], WATER[2], Math.round(150 * (1 - age / life)));
+            continue;
+          }
+        }
         px[i] = 0;
         continue;
       }
@@ -199,7 +224,6 @@ export class FireOverlay {
     return stats;
   }
 
-  events: MapEvent[] = [];
   showFuel = true;
   fuelOpacity = RENDER.TERRAIN_OPACITY;
 
@@ -233,6 +257,21 @@ export class FireOverlay {
     for (const e of this.events) {
       const x = nw.x + ((e.c + 0.5) / this.grid.W) * w;
       const y = nw.y + ((e.r + 0.5) / this.grid.H) * h;
+      if ((e.kind === 'retardant' || e.kind === 'water') && e.r1 !== undefined && e.c1 !== undefined) {
+        // the drop: a bright band that settles into the coated stripe
+        const x1 = nw.x + ((e.c1 + 0.5) / this.grid.W) * w;
+        const y1 = nw.y + ((e.r1 + 0.5) / this.grid.H) * h;
+        const f = Math.min(1, e.age / 4);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x1, y1);
+        ctx.lineCap = 'round';
+        ctx.lineWidth = Math.max(4, 3 * pxPerCell) * (1.6 - 0.6 * f);
+        ctx.strokeStyle = e.kind === 'retardant' ? `rgba(255,80,140,${0.9 * (1 - f)})` : `rgba(150,215,255,${0.9 * (1 - f)})`;
+        ctx.stroke();
+        ctx.lineCap = 'butt';
+        continue;
+      }
       const life = e.kind === 'collapse' ? 15 : e.kind === 'breach' ? 6 : 3;
       const f = Math.min(1, e.age / life);
       const base = e.kind === 'collapse' ? 60 : e.kind === 'whirl' ? 6 : 4;

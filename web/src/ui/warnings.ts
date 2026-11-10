@@ -139,7 +139,8 @@ export class WarningsPanel {
       const prev = this.issued.get(t.zone.id);
       return prev === undefined || rank(t.tier) < rank(prev);
     });
-    if (escalated.length) void this.issue('auto', escalated.map((t) => t.zone.id));
+    // most urgent first; a big fire's remaining zones go out on the next ticks
+    if (escalated.length) void this.issue('auto', escalated.slice(0, 16).map((t) => t.zone.id));
   }
 
   reset(): void {
