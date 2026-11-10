@@ -1,7 +1,24 @@
 // Zone masks, zone ETAs and ensemble (uncertainty) runs. Pure. No DOM.
-import type { StaticGrid } from './grid.ts';
+import { CELL_M, ZONES, type ZoneDef } from '../config.ts';
+import { type StaticGrid, latLngToRC } from './grid.ts';
 import { solve, type SolveInput, type SolveResult } from './solver.ts';
 import { weatherAt, type WeatherPoint } from './ros.ts';
+
+/** Cell indices inside each zone circle, in ZONES order. */
+export function zoneCells(g: StaticGrid, zones: ZoneDef[] = ZONES): Int32Array[] {
+  return zones.map((z) => {
+    const p = latLngToRC(z.lat, z.lng);
+    const rad = z.radiusM / CELL_M;
+    const out: number[] = [];
+    for (let r = Math.floor(p.r - rad); r <= p.r + rad; r++) {
+      for (let c = Math.floor(p.c - rad); c <= p.c + rad; c++) {
+        if (r < 0 || r >= g.H || c < 0 || c >= g.W) continue;
+        if ((r - p.r) ** 2 + (c - p.c) ** 2 <= rad * rad) out.push(r * g.W + c);
+      }
+    }
+    return Int32Array.from(out);
+  });
+}
 
 export interface ZoneStat {
   arrival: number; // absolute sim minute of first arrival in zone; Infinity if not reached

@@ -2,7 +2,7 @@
 // The browser may only send STRUCTURED facts (zone id, tier, minutes, wind numbers). The server
 // validates them against known values, builds the prompt itself, and fact-checks the model's output
 // before anything is shown, spoken or sent. Free text from the browser never reaches the model.
-import { zoneById } from './zones.ts';
+import { ZONES } from './config.ts';
 import { fmtDuration } from './units.ts';
 
 export const TIERS = ['EVACUATION ORDER', 'EVACUATION WARNING', 'MONITOR'] as const;
@@ -40,9 +40,7 @@ export interface ModelAlert {
   long_es?: string;
 }
 
-export const zoneName = (id: string) => zoneById(id)?.name ?? '';
-/** Most zones the browser may send in one /api/alerts request (keeps each model call small and fast). */
-export const MAX_ZONES_PER_REQUEST = 8;
+export const zoneName = (id: string) => ZONES.find((z) => z.id === id)?.name ?? '';
 
 // ---------- 1. Validate the request (structured facts only) ----------
 const num = (v: unknown, lo: number, hi: number): number | null =>
@@ -50,12 +48,12 @@ const num = (v: unknown, lo: number, hi: number): number | null =>
 
 export function sanitizeRequest(body: unknown): { facts: ZoneFact[]; ctx: CtxFact; lang: AlertLang } | { error: string } {
   const b = body as { zones?: unknown; ctx?: unknown; lang?: unknown } | null;
-  if (!b || !Array.isArray(b.zones) || b.zones.length === 0 || b.zones.length > MAX_ZONES_PER_REQUEST) return { error: `zones[] required (1..${MAX_ZONES_PER_REQUEST})` };
+  if (!b || !Array.isArray(b.zones) || b.zones.length === 0 || b.zones.length > ZONES.length) return { error: 'zones[] required (1..8)' };
   const facts: ZoneFact[] = [];
   const seen = new Set<string>();
   for (const raw of b.zones as Record<string, unknown>[]) {
     const id = String(raw?.zone ?? '');
-    if (!zoneById(id) || seen.has(id)) return { error: `unknown or duplicate zone "${id.slice(0, 8)}"` };
+    if (!ZONES.some((z) => z.id === id) || seen.has(id)) return { error: `unknown or duplicate zone "${id.slice(0, 8)}"` };
     seen.add(id);
     const tier = TIERS.find((t) => t === raw.tier);
     if (!tier) return { error: `bad tier for zone ${id}` };
@@ -87,10 +85,10 @@ Rules:
 - Say "follow official evacuation routes" instead of naming any route.
 - The mph figure is WIND speed, not fire speed. Never write that the fire moves at that speed; say "winds 34 mph" if you mention it.
 - Write times exactly as given (e.g. "1h 55m" or "45m").
-- SMS: at most 160 characters. Start exactly like "EVACUATION ORDER Zone ALTA-2 (Altadena):" (tier in capitals, the zone ID exactly as given, place name in brackets), then plain words and one clear action.
+- SMS: at most 160 characters. Start exactly like "EVACUATION ORDER Zone E (Altadena):" (tier in capitals, zone letter, town name in brackets), then plain words and one clear action.
 - Long: 2-3 short sentences: what is happening, when, what to do. End with: "Estimate from a simplified fire model, not an official forecast."
-- Spanish (when asked): natural Latin American Spanish, same facts, same rules; start like "ORDEN DE EVACUACIÓN Zona ALTA-2 (Altadena):"; tier words: ORDEN DE EVACUACIÓN / ADVERTENCIA DE EVACUACIÓN / MANTÉNGASE ALERTA. End the long version with: "Estimación de un modelo simplificado, no es un pronóstico oficial."
-- Output ONLY JSON: {"alerts":[{"zone":"ALTA-2","sms_en":"...","long_en":"...","sms_es":"...","long_es":"..."}]} (omit _es fields if Spanish not requested).`;
+- Spanish (when asked): natural Latin American Spanish, same facts, same rules; start like "ORDEN DE EVACUACIÓN Zona E (Altadena):"; tier words: ORDEN DE EVACUACIÓN / ADVERTENCIA DE EVACUACIÓN / MANTÉNGASE ALERTA. End the long version with: "Estimación de un modelo simplificado, no es un pronóstico oficial."
+- Output ONLY JSON: {"alerts":[{"zone":"A","sms_en":"...","long_en":"...","sms_es":"...","long_es":"..."}]} (omit _es fields if Spanish not requested).`;
 
 export function etaStrings(f: ZoneFact): { earliest: string; range: string } {
   if (f.burning) return { earliest: 'now', range: 'fire is inside the zone' };

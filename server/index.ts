@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { speechScript, type SpeechTier } from '../web/src/speech.ts';
-import { WINDGRID, windGridPoints, type WindFieldData } from '../web/src/windgrid.ts';
 import { TIERS, buildMessages, factCheck, forwardableSms, parseModelJson, sanitizeRequest, zoneName, type AlertTier } from '../web/src/alertsCore.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -59,10 +58,9 @@ function limit(perMinute: number): express.RequestHandler {
   };
 }
 app.use('/api/chat', limit(20));
-app.use('/api/alerts', limit(40)); // big fires send alerts in batches of 8 zones
+app.use('/api/alerts', limit(20));
 app.use('/api/tts', limit(120));
 app.use('/api/dispatch', limit(20));
-app.use('/api/windfield', limit(30));
 // Production: no general chat endpoint, no free-text speech. Dev keeps them for experiments.
 const DEV = process.env.NODE_ENV !== 'production';
 const ALLOW_GENERAL_CHAT = process.env.ALLOW_GENERAL_CHAT === '1' || DEV;
@@ -88,53 +86,6 @@ app.get('/api/health', (_req, res) => {
     voices: { en: TTS_VOICE, es: TTS_VOICE_ES },
     webhook: WEBHOOK_URL ? WEBHOOK_KIND : null,
   });
-});
-
-// GET /api/windfield -> hourly 10 m wind forecast on a ~0.3 deg lattice over the megaregion (Open-Meteo),
-// for the map's wind streaks outside the fire-model area. One upstream call per hour, shared by all viewers.
-// (Historical replays use the saved file web/public/weather/region_2025-01-07.json.)
-let windCache: { at: number; data: WindFieldData } | null = null;
-let windInflight: Promise<WindFieldData> | null = null;
-async function loadWindField(): Promise<WindFieldData> {
-  const pts = windGridPoints();
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${pts.map((p) => p.lat).join(',')}&longitude=${pts.map((p) => p.lng).join(',')}` +
-    `&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&timezone=America%2FLos_Angeles&forecast_days=4`;
-  const r = await fetchWithTimeout(url, {}, 20000);
-  if (!r.ok) throw new Error(`open-meteo ${r.status}`);
-  const j = (await r.json()) as { hourly: { time: string[]; wind_speed_10m: (number | null)[]; wind_direction_10m: (number | null)[] } }[];
-  const list = Array.isArray(j) ? j : [j];
-  if (list.length !== pts.length) throw new Error(`open-meteo returned ${list.length}/${pts.length} points`);
-  const times = list[0].hourly.time;
-  const u: number[] = [];
-  const v: number[] = [];
-  for (let k = 0; k < times.length; k++) {
-    for (const loc of list) {
-      const sp = loc.hourly.wind_speed_10m[k] ?? 0;
-      const dir = (((loc.hourly.wind_direction_10m[k] ?? 0) + 180) * Math.PI) / 180; // toward
-      u.push(Math.round(sp * Math.sin(dir) * 10) / 10);
-      v.push(Math.round(sp * Math.cos(dir) * 10) / 10);
-    }
-  }
-  return { times, rows: WINDGRID.rows, cols: WINDGRID.cols, u, v };
-}
-app.get('/api/windfield', async (_req, res) => {
-  if (windCache && Date.now() - windCache.at < 3600_000) {
-    res.json(windCache.data);
-    return;
-  }
-  try {
-    windInflight ??= loadWindField();
-    const data = await windInflight;
-    windCache = { at: Date.now(), data };
-    res.setHeader('Cache-Control', 'private, max-age=600');
-    res.json(data);
-  } catch (err) {
-    if (windCache) res.json(windCache.data); // stale beats nothing
-    else res.status(502).json({ error: String(err).slice(0, 120) });
-  } finally {
-    windInflight = null;
-  }
 });
 
 // POST /api/chat  { messages, tools?, max_tokens? } -> raw OpenRouter chat completion JSON

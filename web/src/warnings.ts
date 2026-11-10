@@ -1,6 +1,5 @@
 // Evacuation warnings: tiers are deterministic code; the LLM only writes the wording.
 import { fmtDuration } from './units.ts';
-import { MAX_ZONES_PER_REQUEST } from './alertsCore.ts';
 
 export type Tier = 'EVACUATION ORDER' | 'EVACUATION WARNING' | 'MONITOR';
 export type Lang = 'en' | 'es' | 'both';
@@ -132,35 +131,33 @@ export async function writeAlerts(zones: ZoneSituation[], ctx: FireContext, lang
   const tiered = assignTiers(zones);
   if (tiered.length === 0) return { alerts: [], note: 'No zone is within 8 h of the fire. No alerts needed.' };
   const templates = tiered.map((t) => templateAlert(t.zone, t.tier, t.etaMin, ctx, lang));
-  const ctxFacts = {
-    windMph: Math.round(ctx.windMph),
-    windFrom: DIRS.includes(ctx.windFrom) ? ctx.windFrom : 'N',
-    behaviour: BEHAV.includes(ctx.behaviour) ? ctx.behaviour : 'wind-driven',
-    spotFires: ctx.spotFires,
+  const body = {
+    lang: lang === 'en' ? 'en' : 'both',
+    ctx: {
+      windMph: Math.round(ctx.windMph),
+      windFrom: DIRS.includes(ctx.windFrom) ? ctx.windFrom : 'N',
+      behaviour: BEHAV.includes(ctx.behaviour) ? ctx.behaviour : 'wind-driven',
+      spotFires: ctx.spotFires,
+    },
+    zones: tiered.map((t) => ({
+      zone: t.zone.id,
+      tier: t.tier,
+      burning: t.zone.burningPct > 0,
+      etaMin: Math.round(t.etaMin),
+      etaLatestMin: t.zone.etaLatest !== null ? Math.round(Math.max(t.etaMin, t.zone.etaLatest)) : null,
+      fireDir: t.zone.fireDir,
+      fireKm: t.zone.fireKm !== null ? Math.round(t.zone.fireKm * 10) / 10 : null,
+    })),
   };
-  const zoneFacts = tiered.map((t) => ({
-    zone: t.zone.id,
-    tier: t.tier,
-    burning: t.zone.burningPct > 0,
-    etaMin: Math.round(t.etaMin),
-    etaLatestMin: t.zone.etaLatest !== null ? Math.round(Math.max(t.etaMin, t.zone.etaLatest)) : null,
-    fireDir: t.zone.fireDir,
-    fireKm: t.zone.fireKm !== null ? Math.round(t.zone.fireKm * 10) / 10 : null,
-  }));
   try {
-    // most urgent zones first, MAX_ZONES_PER_REQUEST per model call
-    const data: { alerts: ({ zone: string; rejected?: string[] } & Record<string, string>)[] } = { alerts: [] };
-    for (let i = 0; i < zoneFacts.length; i += MAX_ZONES_PER_REQUEST) {
-      const body = { lang: lang === 'en' ? 'en' : 'both', ctx: ctxFacts, zones: zoneFacts.slice(i, i + MAX_ZONES_PER_REQUEST) };
-      const r = await fetch('/api/alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(40000),
-      });
-      if (!r.ok) throw new Error(`/api/alerts ${r.status}: ${(await r.text()).slice(0, 160)}`);
-      data.alerts.push(...((await r.json()) as typeof data).alerts);
-    }
+    const r = await fetch('/api/alerts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(40000),
+    });
+    if (!r.ok) throw new Error(`/api/alerts ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    const data = (await r.json()) as { alerts: ({ zone: string; rejected?: string[] } & Record<string, string>)[] };
     let used = 0;
     let rejected = 0;
     const alerts = templates.map((tpl) => {
