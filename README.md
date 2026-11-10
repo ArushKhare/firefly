@@ -1,7 +1,10 @@
 # FireFly
 
 **Predictive wildfire modeling + AI-written, voice-broadcast evacuation warnings.**
-Built at NOVA (CMU GenAI hackathon). Replays the January 2025 **Palisades** and **Eaton** fires in Los Angeles with real terrain, real weather and real fire perimeters for validation.
+
+🏆 **Winner, Most Innovative Award** at NOVA, Carnegie Mellon University's GenAI hackathon (November 2026).
+
+Replays the January 2025 **Palisades** and **Eaton** fires in Los Angeles with real terrain, real weather and real fire perimeters for validation.
 
 > ⚠️ Simulation only. Every outgoing message is prefixed `[SIMULATION]`. Not an official forecast or alerting system.
 
